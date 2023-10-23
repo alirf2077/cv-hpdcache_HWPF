@@ -57,16 +57,16 @@ import hpdcache_pkg::*;
 
     // Snooping
     //   Address to snoop on requests ports
-    output hpdcache_nline_t             snoop_nline_o,
+    output hpdcache_nline_t             snoop_addr_o,
     //   If set to one, the snoop address matched one of the requests
-    input  snoop_match_i,
+    input  logic snoop_match_i,
 
     // D-Cache interface
-    output logic                        hpdcache_req_valid_o,
-    input  logic                        hpdcache_req_ready_i,
-    output hpdcache_req_t               hpdcache_req_o,
-    input  logic                        hpdcache_rsp_valid_i,
-    input  hpdcache_rsp_t               hpdcache_rsp_i
+    output logic                        dcache_req_valid_o,
+    input  logic                        dcache_req_ready_i,
+    output hpdcache_req_t               dcache_req_o,
+    input  logic                        dcache_rsp_valid_i,
+    input  hpdcache_rsp_t               dcache_rsp_i
 );
 //  }}}
 
@@ -84,7 +84,8 @@ import hpdcache_pkg::*;
 
     //  Internal registers and signals
     //  {{{
-    //      FSM
+
+    //  FSM
     enum {
         IDLE,
         SNOOP,
@@ -108,17 +109,15 @@ import hpdcache_pkg::*;
     hwpf_stride_throttle_t shadow_throttle_q, shadow_throttle_d;
     hpdcache_nline_t request_nline_q, request_nline_d;
 
-    hpdcache_set_t hpdcache_req_set;
-    hpdcache_tag_t hpdcache_req_tag;
-
     logic csr_base_update;
     hpdcache_nline_t increment_stride;
     logic is_inflight_max;
 
-    //      Default assignment
-    assign increment_stride = hpdcache_nline_t'(shadow_param_q.stride) + 1'b1;
-    assign inflight_dec     = hpdcache_rsp_valid_i;
-    assign snoop_nline_o    = shadow_base_q.base_cline;
+    // Default assignment
+    // forood: stride is absolute not base 1
+    assign increment_stride = hpdcache_nline_t'(shadow_param_q.stride)/* + 1'b1*/;
+    assign inflight_dec     = dcache_rsp_valid_i;
+    assign snoop_addr_o     = shadow_base_q.base_cline;
     assign is_inflight_max  = ( shadow_throttle_q.ninflight == '0 ) ?
                               1'b0 : ( inflight_cnt_q >= shadow_throttle_q.ninflight );
     assign csr_base_o       = csr_base_q;
@@ -126,23 +125,18 @@ import hpdcache_pkg::*;
     assign csr_throttle_o   = csr_throttle_q;
     //  }}}
 
-    //  Dcache outputs
+    //  DCache outputs
     //  {{{
-    assign hpdcache_req_set = request_nline_q[0                  +: HPDCACHE_SET_WIDTH],
-           hpdcache_req_tag = request_nline_q[HPDCACHE_SET_WIDTH +: HPDCACHE_TAG_WIDTH];
-
-    assign hpdcache_req_o.addr_offset     = { hpdcache_req_set, {HPDCACHE_OFFSET_WIDTH{1'b0}} },
-           hpdcache_req_o.wdata           = '0,
-           hpdcache_req_o.op              = HPDCACHE_REQ_CMO,
-           hpdcache_req_o.be              = '1,
-           hpdcache_req_o.size            = HPDCACHE_REQ_CMO_PREFETCH,
-           hpdcache_req_o.sid             = '0, // this is set when connecting to the dcache
-           hpdcache_req_o.tid             = '0, // this is set by the wrapper of the prefetcher
-           hpdcache_req_o.need_rsp        = 1'b1,
-           hpdcache_req_o.phys_indexed    = 1'b1,
-           hpdcache_req_o.addr_tag        = hpdcache_req_tag,
-           hpdcache_req_o.pma.uncacheable = 1'b0,
-           hpdcache_req_o.pma.io          = 1'b0;
+    assign dcache_req_o.addr = hpdcache_req_addr_t'({ request_nline_q,
+                                                    {$clog2(CACHE_LINE_BYTES){1'b0}} }),
+           dcache_req_o.wdata = '0,
+           dcache_req_o.op = HPDCACHE_REQ_CMO,
+           dcache_req_o.be = '1,
+           dcache_req_o.size = HPDCACHE_REQ_CMO_PREFETCH,
+           dcache_req_o.uncacheable = 1'b0, // cacheability table after the wrapper
+           dcache_req_o.sid = '0, // this is set when connecting to the dcache
+           dcache_req_o.tid = '0, // this is set by the wrapper of the prefetcher
+           dcache_req_o.need_rsp = 1'b1;
     //  }}}
 
     //  Set state of internal registers
@@ -158,7 +152,10 @@ import hpdcache_pkg::*;
             request_nline_q <= '0;
             state_q <= IDLE;
         end else begin
-            if      (csr_base_set_i) csr_base_q <= csr_base_i;
+            if      (csr_base_set_i) begin 
+                csr_base_q <= csr_base_i;
+                ////$display("a change is happening, addr is : %h, stride is %h", csr_base_q.enable, csr_param_i.stride);
+            end
             else if (csr_base_update) csr_base_q <= shadow_base_d;
             if      (csr_param_set_i) csr_param_q <= csr_param_i;
             if      (csr_throttle_set_i) csr_throttle_q <= csr_throttle_i;
@@ -206,7 +203,7 @@ import hpdcache_pkg::*;
     //  {{{
     always_comb begin : fsm_control
         // default assignments
-        hpdcache_req_valid_o = 1'b0;
+        dcache_req_valid_o = 1'b0;
         nblocks_cnt_d = nblocks_cnt_q;
         nlines_cnt_d = nlines_cnt_q;
         nwait_cnt_d = nwait_cnt_q;
@@ -230,6 +227,7 @@ import hpdcache_pkg::*;
                         shadow_param_d = csr_param_q;
                         shadow_throttle_d = csr_throttle_q;
                         state_d = SNOOP;
+                        //$display("heey there");
                     end else begin
                         // no prefetch needed, disarm immediately
                         shadow_base_d.enable = 1'b0;
@@ -242,7 +240,12 @@ import hpdcache_pkg::*;
             SNOOP: begin
                 if ( csr_base_q.enable ) begin
                     // If a snooper matched an address, send the request
+                    ////$display("snoopp addr is %h",snoop_match_i );
                     if ( snoop_match_i ) begin
+                        //forood: busy bit must be set to 1 here to in order to coordinate
+                        //successfully with the snooping mechanism.
+                        busy_o = 1'b1;
+                        $display("snoop addr is %h, snoop stride is %d", shadow_base_q.base_cline, csr_param_i.stride);
                         state_d = SEND_REQ;
 
                         if ( shadow_param_q.nlines == 0 ) begin
@@ -272,10 +275,11 @@ import hpdcache_pkg::*;
                 busy_o = 1'b1;
 
                 // make the prefetch request to memory
-                hpdcache_req_valid_o = 1'b1;
+                dcache_req_valid_o = 1'b1;
 
                 // we've got a grant, so we can move to the next request
-                if ( hpdcache_req_ready_i ) begin
+                if ( dcache_req_ready_i ) begin
+                    $display("I have a grant, addr to prefetch is %h",request_nline_q);
                     inflight_inc = 1'b1;
 
                     if ( nlines_cnt_q == 0 ) begin
@@ -331,7 +335,7 @@ import hpdcache_pkg::*;
 
 
             DONE: begin
-                busy_o = 1'b1;
+                busy_o = 1'b1; 
                 if ( csr_base_q.enable ) begin
                     if (( inflight_cnt_q == 0 ) && !is_inflight_max && ( nwait_cnt_q == 0 )) begin
                         // Copy back shadow base register into the user visible one

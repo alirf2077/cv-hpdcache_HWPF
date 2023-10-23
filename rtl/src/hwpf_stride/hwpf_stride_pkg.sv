@@ -24,6 +24,8 @@
  *                  prefetcher package
  *  History       :
  */
+
+
 package hwpf_stride_pkg;
     //  Base address configuration register of the hardware memory prefetcher
     //  {{{
@@ -64,5 +66,37 @@ package hwpf_stride_pkg;
             logic [15:0]  enabled;
             } hwpf_stride_status_t;
     //  }}}
+
+
+
+
+        `define PREFETCHER_TAG_SIZE 39
+        `define PREFETCHER_INDEX_SIZE 6
+        `define PREFETCHER_TABLE_SIZE 64
+
+
+        typedef enum logic [2:0] {
+                INITIAL = 3'b000,
+                STRIDE_DETECTION = 3'b001,
+                HIT1 = 3'b010,
+                HIT2 = 3'b011,
+                HIT3 = 3'b100,
+                PREFETCHING = 3'b101
+        }prefetching_mode_t;
+
+        typedef struct packed {
+                logic                                                             valid;
+                logic                   [`PREFETCHER_TAG_SIZE - 1:0]               tag;
+                prefetching_mode_t                                                training_mode;
+                logic                   [`PREFETCHER_INDEX_SIZE - 1 :0]            index;
+                logic                   [`PREFETCHER_INDEX_SIZE - 2:0]             stride;
+                logic                   [$bits(`PREFETCHER_TABLE_SIZE - 1):0]      LRU_state;
+        } prefethcing_table_entry_t;
+
+        typedef struct packed {
+                hwpf_stride_base_t              base;
+                hwpf_stride_param_t             param;
+                hwpf_stride_throttle_t          throttle;
+        } prefethcing_engine_entry_t;
 
 endpackage
